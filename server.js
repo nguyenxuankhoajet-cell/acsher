@@ -4,7 +4,7 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const nodemailer = require('nodemailer');
-const fs = require('fs');
+const { Pool } = require('pg');
 const path = require('path');
 const crypto = require('crypto');
 
@@ -13,18 +13,14 @@ const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'doi-chuoi-bi-mat-nay';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'changeme123';
 
-const PRODUCTS_FILE = path.join(__dirname, 'data', 'products.json');
-const ORDERS_FILE = path.join(__dirname, 'data', 'orders.json');
-const USERS_FILE = path.join(__dirname, 'data', 'users.json');
-const SETTINGS_FILE = path.join(__dirname, 'data', 'settings.json');
-
-const DEFAULT_SETTINGS = {
-  siteName: 'filedrop',
-  heroTitle: 'Tải file, không phải chờ đợi.',
-  heroSubtitle: 'Template, tài liệu và asset chất lượng — mua một lần, tải về ngay.',
-  footerText: 'filedrop — kho file số',
-  colors: { bg: '#120a26', pink: '#ff3fa4', cyan: '#22e0ff', lime: '#9dff5c' },
-};
+// ---------- Kết nối database Supabase (Postgres) ----------
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+});
+async function q(text, params) {
+  return pool.query(text, params);
+}
 
 // ---------- Gửi email OTP qua Gmail ----------
 const mailTransporter = nodemailer.createTransport({
@@ -47,29 +43,13 @@ async function sendOtpEmail(toEmail, code) {
   });
 }
 
-// Lưu tạm các yêu cầu đăng ký đang chờ xác thực OTP (trong bộ nhớ, mất khi restart server)
-const pendingRegistrations = new Map(); // email -> { code, expiresAt, data }
+const pendingRegistrations = new Map();
 function genOtp() { return String(Math.floor(100000 + Math.random() * 900000)); }
 
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ---------- Helpers: đọc/ghi file JSON làm "cơ sở dữ liệu" ----------
-function readJSON(file, fallback) {
-  try {
-    if (!fs.existsSync(file)) return fallback;
-    return JSON.parse(fs.readFileSync(file, 'utf-8'));
-  } catch (e) {
-    console.error('Lỗi đọc file', file, e);
-    return fallback;
-  }
-}
-function writeJSON(file, data) {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf-8');
-}
-
-// ---------- Middleware xác thực admin ----------
 function requireAdmin(req, res, next) {
   const auth = req.headers.authorization || '';
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
@@ -82,7 +62,6 @@ function requireAdmin(req, res, next) {
   }
 }
 
-// ---------- Đăng nhập admin ----------
 app.post('/api/admin/login', (req, res) => {
   const { password } = req.body || {};
   if (!password || password !== ADMIN_PASSWORD) {
@@ -92,75 +71,108 @@ app.post('/api/admin/login', (req, res) => {
   res.json({ token });
 });
 
-// ---------- Sản phẩm (công khai: xem | admin: thêm/sửa/xoá) ----------
-app.get('/api/products', (req, res) => {
-  const products = readJSON(PRODUCTS_FILE, []);
-  // Không trả fileUrl công khai - chỉ lộ ra sau khi đơn hàng được duyệt (xem /api/my-orders)
-  res.json(products.map(({ fileUrl, ...rest }) => rest));
+function rowToProduct(r) {
+  return { id: r.id, ext: r.ext, name: r.name, desc: r.description, size: r.size, price: r.price, fileUrl: r.file_url };
+}
+
+app.get('/api/products', async (req, res) => {
+  try {
+    const { rows } = await q('select id, ext, name, description, size, price from products order by id');
+    res.json(rows.map(r => ({ id: r.id, ext: r.ext, name: r.name, desc: r.description, size: r.size, price: r.price })));
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Lỗi cơ sở dữ liệu' }); }
 });
 
-// Admin xem đầy đủ sản phẩm (bao gồm cả link tải) để chỉnh sửa
-app.get('/api/admin/products', requireAdmin, (req, res) => {
-  res.json(readJSON(PRODUCTS_FILE, []));
+app.get('/api/admin/products', requireAdmin, async (req, res) => {
+  try {
+    const { rows } = await q('select * from products order by id');
+    res.json(rows.map(rowToProduct));
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Lỗi cơ sở dữ liệu' }); }
 });
 
-app.post('/api/products', requireAdmin, (req, res) => {
-  const products = readJSON(PRODUCTS_FILE, []);
+app.post('/api/products', requireAdmin, async (req, res) => {
   const { ext, name, desc, size, price, fileUrl } = req.body || {};
   if (!name) return res.status(400).json({ error: 'Thiếu tên file' });
-  const nextId = products.length ? Math.max(...products.map(p => p.id)) + 1 : 1;
-  const product = { id: nextId, ext: ext || '.zip', name, desc: desc || '', size: size || '—', price: Number(price) || 0, fileUrl: fileUrl || '' };
-  products.push(product);
-  writeJSON(PRODUCTS_FILE, products);
-  res.status(201).json(product);
+  try {
+    const { rows } = await q(
+      `insert into products (ext, name, description, size, price, file_url) values ($1,$2,$3,$4,$5,$6) returning *`,
+      [ext || '.zip', name, desc || '', size || '—', Number(price) || 0, fileUrl || '']
+    );
+    res.status(201).json(rowToProduct(rows[0]));
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Lỗi cơ sở dữ liệu' }); }
 });
 
-app.put('/api/products/:id', requireAdmin, (req, res) => {
-  const products = readJSON(PRODUCTS_FILE, []);
+app.put('/api/products/:id', requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
-  const idx = products.findIndex(p => p.id === id);
-  if (idx === -1) return res.status(404).json({ error: 'Không tìm thấy sản phẩm' });
-  products[idx] = { ...products[idx], ...req.body, id };
-  writeJSON(PRODUCTS_FILE, products);
-  res.json(products[idx]);
+  const fields = { ext: 'ext', name: 'name', desc: 'description', size: 'size', price: 'price', fileUrl: 'file_url' };
+  const sets = []; const vals = []; let i = 1;
+  for (const [bodyKey, col] of Object.entries(fields)) {
+    if (req.body[bodyKey] !== undefined) { sets.push(`${col} = $${i++}`); vals.push(req.body[bodyKey]); }
+  }
+  if (!sets.length) return res.status(400).json({ error: 'Không có gì để cập nhật' });
+  vals.push(id);
+  try {
+    const { rows } = await q(`update products set ${sets.join(', ')} where id = $${i} returning *`, vals);
+    if (!rows.length) return res.status(404).json({ error: 'Không tìm thấy sản phẩm' });
+    res.json(rowToProduct(rows[0]));
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Lỗi cơ sở dữ liệu' }); }
 });
 
-app.delete('/api/products/:id', requireAdmin, (req, res) => {
-  let products = readJSON(PRODUCTS_FILE, []);
+app.delete('/api/products/:id', requireAdmin, async (req, res) => {
+  try {
+    await q('delete from products where id = $1', [Number(req.params.id)]);
+    res.json({ ok: true });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Lỗi cơ sở dữ liệu' }); }
+});
+
+app.get('/api/settings', async (req, res) => {
+  try {
+    const { rows } = await q('select * from settings where id = 1');
+    const s = rows[0] || {};
+    res.json({
+      siteName: s.site_name, heroTitle: s.hero_title, heroSubtitle: s.hero_subtitle,
+      footerText: s.footer_text, colors: s.colors,
+    });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Lỗi cơ sở dữ liệu' }); }
+});
+app.put('/api/settings', requireAdmin, async (req, res) => {
+  try {
+    const current = await q('select * from settings where id = 1');
+    const cur = current.rows[0] || {};
+    const colors = { ...(cur.colors || {}), ...(req.body.colors || {}) };
+    const { rows } = await q(
+      `insert into settings (id, site_name, hero_title, hero_subtitle, footer_text, colors)
+       values (1, $1,$2,$3,$4,$5)
+       on conflict (id) do update set site_name=$1, hero_title=$2, hero_subtitle=$3, footer_text=$4, colors=$5
+       returning *`,
+      [
+        req.body.siteName ?? cur.site_name,
+        req.body.heroTitle ?? cur.hero_title,
+        req.body.heroSubtitle ?? cur.hero_subtitle,
+        req.body.footerText ?? cur.footer_text,
+        colors,
+      ]
+    );
+    const s = rows[0];
+    res.json({ siteName: s.site_name, heroTitle: s.hero_title, heroSubtitle: s.hero_subtitle, footerText: s.footer_text, colors: s.colors });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Lỗi cơ sở dữ liệu' }); }
+});
+
+app.get('/api/users', requireAdmin, async (req, res) => {
+  try {
+    const { rows } = await q('select id, name, username, email, balance from users order by id');
+    res.json(rows);
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Lỗi cơ sở dữ liệu' }); }
+});
+app.put('/api/users/:id/balance', requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
-  products = products.filter(p => p.id !== id);
-  writeJSON(PRODUCTS_FILE, products);
-  res.json({ ok: true });
-});
-
-// ---------- Cài đặt giao diện & nội dung web (công khai: xem | admin: sửa) ----------
-app.get('/api/settings', (req, res) => {
-  res.json(readJSON(SETTINGS_FILE, DEFAULT_SETTINGS));
-});
-app.put('/api/settings', requireAdmin, (req, res) => {
-  const current = readJSON(SETTINGS_FILE, DEFAULT_SETTINGS);
-  const updated = { ...current, ...req.body, colors: { ...current.colors, ...(req.body.colors || {}) } };
-  writeJSON(SETTINGS_FILE, updated);
-  res.json(updated);
-});
-
-// ---------- Quản lý tài khoản khách & số dư ví (chỉ admin) ----------
-app.get('/api/users', requireAdmin, (req, res) => {
-  const users = readJSON(USERS_FILE, []);
-  res.json(users.map(u => ({ id: u.id, name: u.name, username: u.username, email: u.email, balance: u.balance || 0 })));
-});
-app.put('/api/users/:id/balance', requireAdmin, (req, res) => {
-  const users = readJSON(USERS_FILE, []);
-  const id = Number(req.params.id);
-  const idx = users.findIndex(u => u.id === id);
-  if (idx === -1) return res.status(404).json({ error: 'Không tìm thấy tài khoản' });
   const delta = Number(req.body.delta) || 0;
-  users[idx].balance = (users[idx].balance || 0) + delta;
-  writeJSON(USERS_FILE, users);
-  res.json({ id: users[idx].id, name: users[idx].name, balance: users[idx].balance });
+  try {
+    const { rows } = await q('update users set balance = balance + $1 where id = $2 returning id, name, balance', [delta, id]);
+    if (!rows.length) return res.status(404).json({ error: 'Không tìm thấy tài khoản' });
+    res.json(rows[0]);
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Lỗi cơ sở dữ liệu' }); }
 });
 
-// ---------- Middleware xác thực khách hàng (user thường) ----------
 function requireUser(req, res, next) {
   const auth = req.headers.authorization || '';
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
@@ -174,7 +186,6 @@ function requireUser(req, res, next) {
     return res.status(401).json({ error: 'Token không hợp lệ hoặc đã hết hạn' });
   }
 }
-// Xác thực "mềm": nếu có token hợp lệ thì gắn userId, không có/lỗi thì vẫn cho qua (khách vãng lai)
 function attachUserIfAny(req, res, next) {
   const auth = req.headers.authorization || '';
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
@@ -187,37 +198,33 @@ function attachUserIfAny(req, res, next) {
   next();
 }
 
-// ---------- Đăng ký / đăng nhập khách hàng ----------
-// ---------- Đăng ký khách hàng (2 bước: gửi OTP -> xác nhận OTP) ----------
 app.post('/api/register/request-otp', async (req, res) => {
   const { name, username, email, phone, password } = req.body || {};
   if (!name || !username || !email || !password) {
     return res.status(400).json({ error: 'Vui lòng điền đủ thông tin bắt buộc' });
   }
-  const users = readJSON(USERS_FILE, []);
-  if (users.some(u => u.username === username)) {
-    return res.status(400).json({ error: 'Tên đăng nhập đã được dùng' });
-  }
-  if (users.some(u => u.email === email)) {
-    return res.status(400).json({ error: 'Email đã được đăng ký' });
-  }
-  const code = genOtp();
-  const passwordHash = await bcrypt.hash(password, 10);
-  pendingRegistrations.set(email, {
-    code,
-    expiresAt: Date.now() + 10 * 60 * 1000, // 10 phút
-    data: { name, username, email, phone: phone || '', passwordHash },
-  });
   try {
-    await sendOtpEmail(email, code);
-  } catch (e) {
-    console.error('Lỗi gửi email OTP:', e.message);
-    return res.status(500).json({ error: 'Không gửi được email OTP. Kiểm tra lại cấu hình GMAIL trong .env.' });
-  }
-  res.json({ ok: true });
+    const dup = await q('select id from users where username = $1 or email = $2', [username, email]);
+    if (dup.rows.length) return res.status(400).json({ error: 'Tên đăng nhập hoặc email đã được dùng' });
+
+    const code = genOtp();
+    const passwordHash = await bcrypt.hash(password, 10);
+    pendingRegistrations.set(email, {
+      code,
+      expiresAt: Date.now() + 10 * 60 * 1000,
+      data: { name, username, email, phone: phone || '', passwordHash },
+    });
+    try {
+      await sendOtpEmail(email, code);
+    } catch (e) {
+      console.error('Lỗi gửi email OTP:', e.message);
+      return res.status(500).json({ error: 'Không gửi được email OTP. Kiểm tra lại cấu hình GMAIL trong .env.' });
+    }
+    res.json({ ok: true });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Lỗi cơ sở dữ liệu' }); }
 });
 
-app.post('/api/register/verify-otp', (req, res) => {
+app.post('/api/register/verify-otp', async (req, res) => {
   const { email, code } = req.body || {};
   const pending = pendingRegistrations.get(email);
   if (!pending) return res.status(400).json({ error: 'Không tìm thấy yêu cầu đăng ký. Vui lòng đăng ký lại.' });
@@ -227,115 +234,112 @@ app.post('/api/register/verify-otp', (req, res) => {
   }
   if (pending.code !== code) return res.status(400).json({ error: 'Mã OTP không đúng' });
 
-  const users = readJSON(USERS_FILE, []);
-  const nextId = users.length ? Math.max(...users.map(u => u.id)) + 1 : 1;
-  const user = { id: nextId, ...pending.data };
-  users.push(user);
-  writeJSON(USERS_FILE, users);
-  pendingRegistrations.delete(email);
-
-  const token = jwt.sign({ role: 'user', userId: user.id }, JWT_SECRET, { expiresIn: '30d' });
-  res.status(201).json({ token, user: { id: user.id, name: user.name, email: user.email } });
+  try {
+    const { name, username, phone, passwordHash } = pending.data;
+    const { rows } = await q(
+      `insert into users (name, username, email, phone, password_hash) values ($1,$2,$3,$4,$5) returning id, name, email`,
+      [name, username, email, phone, passwordHash]
+    );
+    pendingRegistrations.delete(email);
+    const user = rows[0];
+    const token = jwt.sign({ role: 'user', userId: user.id }, JWT_SECRET, { expiresIn: '30d' });
+    res.status(201).json({ token, user: { id: user.id, name: user.name, email: user.email } });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Lỗi cơ sở dữ liệu' }); }
 });
 
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body || {};
-  const users = readJSON(USERS_FILE, []);
-  const user = users.find(u => u.username === username || u.email === username);
-  if (!user) return res.status(401).json({ error: 'Sai tên đăng nhập hoặc mật khẩu' });
-  const ok = await bcrypt.compare(password || '', user.passwordHash);
-  if (!ok) return res.status(401).json({ error: 'Sai tên đăng nhập hoặc mật khẩu' });
-  const token = jwt.sign({ role: 'user', userId: user.id }, JWT_SECRET, { expiresIn: '30d' });
-  res.json({ token, user: { id: user.id, name: user.name, email: user.email } });
+  try {
+    const { rows } = await q('select * from users where username = $1 or email = $1', [username]);
+    const user = rows[0];
+    if (!user) return res.status(401).json({ error: 'Sai tên đăng nhập hoặc mật khẩu' });
+    const ok = await bcrypt.compare(password || '', user.password_hash);
+    if (!ok) return res.status(401).json({ error: 'Sai tên đăng nhập hoặc mật khẩu' });
+    const token = jwt.sign({ role: 'user', userId: user.id }, JWT_SECRET, { expiresIn: '30d' });
+    res.json({ token, user: { id: user.id, name: user.name, email: user.email } });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Lỗi cơ sở dữ liệu' }); }
 });
 
-app.get('/api/me', requireUser, (req, res) => {
-  const users = readJSON(USERS_FILE, []);
-  const user = users.find(u => u.id === req.userId);
-  if (!user) return res.status(404).json({ error: 'Không tìm thấy tài khoản' });
-  res.json({ id: user.id, name: user.name, username: user.username, email: user.email, phone: user.phone || '', balance: user.balance || 0 });
+app.get('/api/me', requireUser, async (req, res) => {
+  try {
+    const { rows } = await q('select id, name, username, email, phone, balance from users where id = $1', [req.userId]);
+    if (!rows.length) return res.status(404).json({ error: 'Không tìm thấy tài khoản' });
+    res.json(rows[0]);
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Lỗi cơ sở dữ liệu' }); }
 });
 
 app.put('/api/me/password', requireUser, async (req, res) => {
   const { currentPassword, newPassword } = req.body || {};
   if (!currentPassword || !newPassword) return res.status(400).json({ error: 'Thiếu mật khẩu hiện tại hoặc mật khẩu mới' });
   if (newPassword.length < 6) return res.status(400).json({ error: 'Mật khẩu mới cần ít nhất 6 ký tự' });
-  const users = readJSON(USERS_FILE, []);
-  const idx = users.findIndex(u => u.id === req.userId);
-  if (idx === -1) return res.status(404).json({ error: 'Không tìm thấy tài khoản' });
-  const ok = await bcrypt.compare(currentPassword, users[idx].passwordHash);
-  if (!ok) return res.status(401).json({ error: 'Mật khẩu hiện tại không đúng' });
-  users[idx].passwordHash = await bcrypt.hash(newPassword, 10);
-  writeJSON(USERS_FILE, users);
-  res.json({ ok: true });
+  try {
+    const { rows } = await q('select password_hash from users where id = $1', [req.userId]);
+    if (!rows.length) return res.status(404).json({ error: 'Không tìm thấy tài khoản' });
+    const ok = await bcrypt.compare(currentPassword, rows[0].password_hash);
+    if (!ok) return res.status(401).json({ error: 'Mật khẩu hiện tại không đúng' });
+    const newHash = await bcrypt.hash(newPassword, 10);
+    await q('update users set password_hash = $1 where id = $2', [newHash, req.userId]);
+    res.json({ ok: true });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Lỗi cơ sở dữ liệu' }); }
 });
 
-app.get('/api/my-orders', requireUser, (req, res) => {
-  const orders = readJSON(ORDERS_FILE, []).filter(o => o.userId === req.userId);
-  const products = readJSON(PRODUCTS_FILE, []);
-  const withLinks = orders.map(o => ({
-    ...o,
-    items: o.itemIds.map(id => {
-      const p = products.find(p => p.id === id);
-      return {
-        id,
-        name: p ? p.name : '(sản phẩm đã bị xoá)',
-        fileUrl: (o.status === 'completed' && p) ? p.fileUrl || '' : '',
-      };
-    }),
-  }));
-  res.json(withLinks);
+app.get('/api/my-orders', requireUser, async (req, res) => {
+  try {
+    const { rows } = await q('select * from orders where user_id = $1 order by created_at', [req.userId]);
+    const prodRes = await q('select id, name, file_url from products');
+    const products = prodRes.rows;
+    const withLinks = rows.map(o => ({
+      id: o.id, total: o.total, status: o.status, createdAt: o.created_at, paymentMethod: o.payment_method,
+      items: o.item_ids.map(id => {
+        const p = products.find(p => p.id === id);
+        return { id, name: p ? p.name : '(sản phẩm đã bị xoá)', fileUrl: (o.status === 'completed' && p) ? p.file_url || '' : '' };
+      }),
+    }));
+    res.json(withLinks);
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Lỗi cơ sở dữ liệu' }); }
 });
 
-
-// ---------- Đơn hàng (khách tạo | admin xem & duyệt) ----------
-app.post('/api/orders', attachUserIfAny, (req, res) => {
-  const orders = readJSON(ORDERS_FILE, []);
+app.post('/api/orders', attachUserIfAny, async (req, res) => {
   const { email, itemIds, paymentMethod, paymentDetail, total } = req.body || {};
   if (!email || !Array.isArray(itemIds) || itemIds.length === 0) {
     return res.status(400).json({ error: 'Thiếu email hoặc danh sách sản phẩm' });
   }
-
-  let status = 'pending';
-  if (paymentMethod === 'balance') {
-    if (!req.userId) return res.status(401).json({ error: 'Cần đăng nhập để dùng số dư ví' });
-    const users = readJSON(USERS_FILE, []);
-    const idx = users.findIndex(u => u.id === req.userId);
-    if (idx === -1) return res.status(404).json({ error: 'Không tìm thấy tài khoản' });
-    const balance = users[idx].balance || 0;
-    if (balance < Number(total)) return res.status(400).json({ error: 'Số dư ví không đủ' });
-    users[idx].balance = balance - Number(total);
-    writeJSON(USERS_FILE, users);
-    status = 'completed'; // trừ ví thành công -> coi như đã thanh toán ngay
-  }
-
-  const order = {
-    id: crypto.randomUUID(),
-    userId: req.userId || null,
-    email,
-    itemIds,
-    paymentMethod: paymentMethod || 'unknown',
-    paymentDetail: paymentDetail || {},
-    total: Number(total) || 0,
-    status, // pending | completed | rejected
-    createdAt: new Date().toISOString(),
-  };
-  orders.push(order);
-  writeJSON(ORDERS_FILE, orders);
-  res.status(201).json({ orderId: order.id, status });
+  try {
+    let status = 'pending';
+    if (paymentMethod === 'balance') {
+      if (!req.userId) return res.status(401).json({ error: 'Cần đăng nhập để dùng số dư ví' });
+      const { rows } = await q('select balance from users where id = $1', [req.userId]);
+      if (!rows.length) return res.status(404).json({ error: 'Không tìm thấy tài khoản' });
+      if (rows[0].balance < Number(total)) return res.status(400).json({ error: 'Số dư ví không đủ' });
+      await q('update users set balance = balance - $1 where id = $2', [Number(total), req.userId]);
+      status = 'completed';
+    }
+    const id = crypto.randomUUID();
+    await q(
+      `insert into orders (id, user_id, email, item_ids, payment_method, payment_detail, total, status)
+       values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [id, req.userId || null, email, itemIds, paymentMethod || 'unknown', paymentDetail || {}, Number(total) || 0, status]
+    );
+    res.status(201).json({ orderId: id, status });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Lỗi cơ sở dữ liệu' }); }
 });
 
-app.get('/api/orders', requireAdmin, (req, res) => {
-  res.json(readJSON(ORDERS_FILE, []));
+app.get('/api/orders', requireAdmin, async (req, res) => {
+  try {
+    const { rows } = await q('select * from orders order by created_at desc');
+    res.json(rows.map(o => ({
+      id: o.id, userId: o.user_id, email: o.email, itemIds: o.item_ids, paymentMethod: o.payment_method,
+      paymentDetail: o.payment_detail, total: o.total, status: o.status, createdAt: o.created_at,
+    })));
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Lỗi cơ sở dữ liệu' }); }
 });
 
-app.put('/api/orders/:id', requireAdmin, (req, res) => {
-  const orders = readJSON(ORDERS_FILE, []);
-  const idx = orders.findIndex(o => o.id === req.params.id);
-  if (idx === -1) return res.status(404).json({ error: 'Không tìm thấy đơn hàng' });
-  orders[idx].status = req.body.status || orders[idx].status;
-  writeJSON(ORDERS_FILE, orders);
-  res.json(orders[idx]);
+app.put('/api/orders/:id', requireAdmin, async (req, res) => {
+  try {
+    const { rows } = await q('update orders set status = $1 where id = $2 returning *', [req.body.status, req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Không tìm thấy đơn hàng' });
+    res.json(rows[0]);
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Lỗi cơ sở dữ liệu' }); }
 });
 
 app.listen(PORT, () => {
