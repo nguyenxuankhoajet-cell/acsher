@@ -24,10 +24,13 @@ async function q(text, params) {
 // ---------- Gửi email OTP qua Brevo (HTTP API - không bị chặn như SMTP) ----------
 async function sendOtpEmail(toEmail, code) {
   if (!process.env.BREVO_API_KEY || !process.env.GMAIL_USER) {
-    console.warn('Chưa cấu hình BREVO_API_KEY/GMAIL_USER trong .env — không gửi được email thật. Mã OTP (chỉ hiện ở log server):', code);
-    return;
+    // Trước đây chỗ này im lặng bỏ qua nên web báo "đã gửi" dù không có email nào được gửi. Giờ báo lỗi thật.
+    throw new Error('Server thiếu biến môi trường BREVO_API_KEY hoặc GMAIL_USER (kiểm tra tab Environment trên Render)');
   }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
   const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+    signal: controller.signal,
     method: 'POST',
     headers: {
       'accept': 'application/json',
@@ -41,10 +44,12 @@ async function sendOtpEmail(toEmail, code) {
       htmlContent: `<p>Mã xác thực của bạn là:</p><h2 style="letter-spacing:4px;">${code}</h2><p>Mã có hiệu lực trong 10 phút. Nếu không phải bạn yêu cầu, hãy bỏ qua email này.</p>`,
     }),
   });
+  clearTimeout(timer);
+  const text = await res.text();
   if (!res.ok) {
-    const text = await res.text();
     throw new Error(`Brevo API lỗi (${res.status}): ${text}`);
   }
+  console.log(`Đã gửi OTP tới ${toEmail} — Brevo trả về: ${text}`);
 }
 
 const pendingRegistrations = new Map();
@@ -222,7 +227,8 @@ app.post('/api/register/request-otp', async (req, res) => {
       await sendOtpEmail(email, code);
     } catch (e) {
       console.error('Lỗi gửi email OTP:', e.message);
-      return res.status(500).json({ error: 'Không gửi được email OTP. Kiểm tra lại cấu hình GMAIL trong .env.' });
+      pendingRegistrations.delete(email);
+      return res.status(500).json({ error: 'Chưa gửi được email xác thực. Bạn thử lại sau ít phút, hoặc liên hệ shop nếu vẫn lỗi.' });
     }
     res.json({ ok: true });
   } catch (e) { console.error(e); res.status(500).json({ error: 'Lỗi cơ sở dữ liệu' }); }
