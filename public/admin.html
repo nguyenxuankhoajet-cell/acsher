@@ -28,7 +28,34 @@
   .status.completed{background:#1c4430;color:var(--lime);}
   .status.rejected{background:#441c2a;color:#ff6b6b;}
   select.statusSelect{width:auto;display:inline-block;margin-left:8px;}
-  @media(max-width:700px){.row,.addgrid{grid-template-columns:1fr 1fr;}}
+  html{-webkit-text-size-adjust:100%;}
+  /* ===== Máy tính ===== */
+  @media (min-width:1100px){
+    .wrap{max-width:1240px;padding:48px 32px 100px;}
+    h1{font-size:30px;}
+    .card{padding:28px;}
+    input,select{font-size:15px;padding:11px 13px;}
+    .btn{font-size:15px;padding:12px 20px;}
+    .order{font-size:15px;}
+    label{font-size:13px;}
+  }
+  /* ===== Điện thoại ===== */
+  @media (max-width:800px){
+    .wrap{padding:20px 12px 60px;}
+    .card{padding:16px;}
+    input,select{font-size:16px;padding:12px;}
+    .btn{padding:13px 16px;font-size:14px;}
+    .row.head{display:none !important;}
+    .row,.addgrid{grid-template-columns:1fr !important;gap:8px;padding:14px 0;}
+    .bal-grid{grid-template-columns:1fr !important;}
+    .color-grid{grid-template-columns:1fr 1fr !important;}
+    #loginBox{margin:40px auto;}
+    select.statusSelect{margin:8px 0 0 0;}
+  }
+  .fld::before{display:none;}
+  @media (max-width:800px){
+    .fld::before{display:block;content:attr(data-l);font-size:12px;color:var(--muted);font-family:var(--disp);margin-bottom:4px;}
+  }
 </style>
 </head>
 <body>
@@ -66,7 +93,7 @@
     <div class="card">
       <h3 style="font-family:var(--disp);margin-top:0;">Cộng / trừ tiền vào ví khách hàng</h3>
       <div id="userList"></div>
-      <div style="display:grid;grid-template-columns:2fr 1fr auto;gap:8px;margin-top:14px;">
+      <div class="bal-grid" style="display:grid;grid-template-columns:2fr 1fr auto;gap:8px;margin-top:14px;">
         <select id="userSelect"></select>
         <input id="balanceDelta" type="text" placeholder="VD: 20.000.000 hoặc -20.000">
         <button class="btn" onclick="adjustBalance()">Cập nhật</button>
@@ -83,11 +110,18 @@
       <input id="setHeroSubtitle">
       <label style="margin-top:10px;">Chữ ở footer</label>
       <input id="setFooterText">
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px;">
+      <div class="color-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px;">
         <div><label>Màu nền</label><input id="setColorBg" type="color" style="height:38px;padding:2px;"></div>
         <div><label>Màu hồng</label><input id="setColorPink" type="color" style="height:38px;padding:2px;"></div>
         <div><label>Màu xanh cyan</label><input id="setColorCyan" type="color" style="height:38px;padding:2px;"></div>
         <div><label>Màu xanh lá</label><input id="setColorLime" type="color" style="height:38px;padding:2px;"></div>
+      </div>
+      <p style="color:var(--muted);font-size:12px;margin:16px 0 8px;">Hoặc chọn nhanh một bảng màu có sẵn (bấm là lưu luôn):</p>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;">
+        <button class="btn" onclick="applyPalette('default')">↺ Mặc định (tím neon)</button>
+        <button class="btn" onclick="applyPalette('ocean')">Xanh biển</button>
+        <button class="btn" onclick="applyPalette('sunset')">Hoàng hôn</button>
+        <button class="btn" onclick="applyPalette('forest')">Xanh rừng</button>
       </div>
       <button class="btn" style="margin-top:16px;" onclick="saveSettings()">Lưu cài đặt</button>
       <p style="color:var(--muted);font-size:12px;margin-top:8px;">Sau khi lưu, khách tải lại trang bán hàng sẽ thấy thay đổi ngay, không cần khởi động lại server.</p>
@@ -176,6 +210,20 @@ async function loadSettings(){
   document.getElementById('setColorCyan').value = s.colors?.cyan || '#22e0ff';
   document.getElementById('setColorLime').value = s.colors?.lime || '#9dff5c';
 }
+const PALETTES = {
+  default: {bg:'#120a26', pink:'#ff3fa4', cyan:'#22e0ff', lime:'#9dff5c'},
+  ocean:   {bg:'#06121f', pink:'#3b82f6', cyan:'#22d3ee', lime:'#7dffcf'},
+  sunset:  {bg:'#1a0d0d', pink:'#ff5e5e', cyan:'#ffb347', lime:'#ffe66d'},
+  forest:  {bg:'#08150f', pink:'#2ecc71', cyan:'#1abc9c', lime:'#d4ff5c'},
+};
+function applyPalette(name){
+  const p = PALETTES[name];
+  document.getElementById('setColorBg').value = p.bg;
+  document.getElementById('setColorPink').value = p.pink;
+  document.getElementById('setColorCyan').value = p.cyan;
+  document.getElementById('setColorLime').value = p.lime;
+  saveSettings();
+}
 async function saveSettings(){
   const body = {
     siteName: document.getElementById('setSiteName').value,
@@ -201,12 +249,12 @@ async function loadProducts(){
   const products = await api('/api/admin/products');
   document.getElementById('productList').innerHTML = products.map(p => `
     <div class="row" id="row-${p.id}" style="grid-template-columns:70px 1.1fr 1.3fr 80px 90px 1.4fr auto;">
-      <input value="${p.ext}" onchange="updateProduct(${p.id},'ext',this.value)">
-      <input value="${p.name.replace(/"/g,'&quot;')}" onchange="updateProduct(${p.id},'name',this.value)">
-      <input value="${p.desc.replace(/"/g,'&quot;')}" onchange="updateProduct(${p.id},'desc',this.value)">
-      <input value="${p.size}" onchange="updateProduct(${p.id},'size',this.value)">
-      <input type="number" value="${p.price}" onchange="updateProduct(${p.id},'price',Number(this.value))">
-      <input value="${(p.fileUrl||'').replace(/"/g,'&quot;')}" placeholder="Link tải (Google Drive, Dropbox...)" onchange="updateProduct(${p.id},'fileUrl',this.value)">
+      <div class="fld" data-l="Đuôi file"><input value="${p.ext}" placeholder="Đuôi (.zip)" onchange="updateProduct(${p.id},'ext',this.value)"></div>
+      <div class="fld" data-l="Tên file"><input value="${p.name.replace(/"/g,'&quot;')}" placeholder="Tên file" onchange="updateProduct(${p.id},'name',this.value)"></div>
+      <div class="fld" data-l="Mô tả"><input value="${p.desc.replace(/"/g,'&quot;')}" placeholder="Mô tả" onchange="updateProduct(${p.id},'desc',this.value)"></div>
+      <div class="fld" data-l="Dung lượng"><input value="${p.size}" placeholder="Dung lượng" onchange="updateProduct(${p.id},'size',this.value)"></div>
+      <div class="fld" data-l="Giá (₫)"><input type="number" value="${p.price}" placeholder="Giá (₫)" onchange="updateProduct(${p.id},'price',Number(this.value))"></div>
+      <div class="fld" data-l="Link tải"><input value="${(p.fileUrl||'').replace(/"/g,'&quot;')}" placeholder="Link tải (Google Drive, Dropbox...)" placeholder="Link tải" onchange="updateProduct(${p.id},'fileUrl',this.value)"></div>
       <button class="btn-danger" onclick="deleteProduct(${p.id})">Xoá</button>
     </div>`).join('') || '<p style="color:var(--muted)">Chưa có sản phẩm.</p>';
 }
