@@ -102,6 +102,14 @@ const fmt = n => n.toLocaleString('vi-VN') + '₫';
 function api(path, opts={}){
   opts.headers = Object.assign({'Content-Type':'application/json'}, opts.headers||{}, TOKEN?{'Authorization':'Bearer '+TOKEN}:{});
   return fetch(path, opts).then(async r => {
+    if(r.status === 401 && path !== '/api/admin/login'){
+      // Token hết hạn/không hợp lệ -> xoá và quay về màn hình đăng nhập
+      TOKEN = null;
+      localStorage.removeItem('fd_admin_token');
+      document.getElementById('adminBox').style.display = 'none';
+      document.getElementById('loginBox').style.display = 'block';
+      throw new Error('Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.');
+    }
     if(!r.ok){ const e = await r.json().catch(()=>({error:'Lỗi'})); throw new Error(e.error||'Lỗi'); }
     return r.json();
   });
@@ -122,10 +130,12 @@ async function login(){
 async function showAdmin(){
   document.getElementById('loginBox').style.display = 'none';
   document.getElementById('adminBox').style.display = 'block';
-  await loadProducts();
-  await loadOrders();
-  await loadUsers();
-  await loadSettings();
+  try{
+    await loadProducts();
+    await loadOrders();
+    await loadUsers();
+    await loadSettings();
+  }catch(e){ /* đã tự quay về màn hình đăng nhập nếu token hết hạn */ }
 }
 
 async function loadUsers(){

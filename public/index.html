@@ -93,6 +93,7 @@
 
 <script>
 const fmt = n => n === 0 ? 'Miễn phí' : n.toLocaleString('vi-VN') + '₫';
+const fmtMoney = n => Number(n||0).toLocaleString('vi-VN') + '₫';
 let PRODUCTS = [];
 let cart = [];
 let AUTH_TOKEN = localStorage.getItem('fd_user_token') || null;
@@ -122,7 +123,7 @@ function renderHeaderUser(){
     <button class="add-btn" onclick="openMyOrders()">📦 Đơn hàng của tôi</button>
     <button class="add-btn" onclick="openProfile()" style="border-color:var(--lime);">👤 ${CURRENT_USER.name}</button>
     <span style="font-family:var(--disp);font-weight:700;font-size:14px;background:rgba(157,255,92,.12);
-      border:1px solid var(--lime);color:var(--lime);padding:7px 14px;border-radius:99px;">💰 ${fmt(CURRENT_USER.balance||0)}</span>
+      border:1px solid var(--lime);color:var(--lime);padding:7px 14px;border-radius:99px;">💰 ${fmtMoney(CURRENT_USER.balance)}</span>
     <button class="add-btn" onclick="logout()">Đăng xuất</button>
     <button class="cart-btn" onclick="toggleDrawer(true)">↓ giỏ hàng (<span id="cartCount">${cart.length}</span>)</button>`;
 }
@@ -214,7 +215,7 @@ async function openProfile(){
       <div><span style="color:var(--muted);">Tên đăng nhập:</span> ${CURRENT_USER.username}</div>
       <div><span style="color:var(--muted);">Email:</span> ${CURRENT_USER.email}</div>
       <div><span style="color:var(--muted);">Số điện thoại:</span> ${CURRENT_USER.phone || '—'}</div>
-      <div><span style="color:var(--muted);">Số dư ví:</span> <strong style="color:var(--lime);">${fmt(CURRENT_USER.balance||0)}</strong></div>
+      <div><span style="color:var(--muted);">Số dư ví:</span> <strong style="color:var(--lime);">${fmtMoney(CURRENT_USER.balance)}</strong></div>
     </div>
     <h3 style="font-size:16px;">Đổi mật khẩu</h3>
     <div class="field"><label>Mật khẩu hiện tại</label><input id="curPass" type="password"></div>
@@ -355,7 +356,7 @@ function renderPayFields(){
        <div class="field"><label>Mã thẻ</label><input id="pin" placeholder="Mã sau khi cào"></div>`;
   } else {
     el.innerHTML = CURRENT_USER
-      ? `<p style="color:var(--muted);font-size:13px;">Số dư hiện tại: <strong style="color:var(--lime)">${fmt(CURRENT_USER.balance||0)}</strong>. Số tiền đơn hàng sẽ được trừ trực tiếp, không cần nhập gì thêm.</p>`
+      ? `<p style="color:var(--muted);font-size:13px;">Số dư hiện tại: <strong style="color:var(--lime)">${fmtMoney(CURRENT_USER.balance)}</strong>. Số tiền đơn hàng sẽ được trừ trực tiếp, không cần nhập gì thêm.</p>`
       : `<p style="color:#ff6b6b;font-size:13px;">Bạn cần <a onclick="closeModal();openAuth('login')" style="color:var(--cyan);cursor:pointer;">đăng nhập</a> để dùng số dư ví.</p>`;
   }
 }
