@@ -233,7 +233,7 @@ function otpFormHTML(email){
     <div class="field"><label>Mã OTP</label><input id="otpCode" type="text" maxlength="6" placeholder="6 số"></div>
     <p id="authErr" style="color:#ff6b6b;font-size:12px;display:none;"></p>
     <button class="checkout-btn" onclick="doVerifyOtp('${email}')">Xác nhận</button>
-    <p style="text-align:center;color:var(--muted);font-size:13px;margin-top:14px;">Không nhận được mã? <a onclick="openAuth('register')" style="color:var(--cyan);cursor:pointer;">Đăng ký lại</a></p>`;
+    <p style="text-align:center;color:var(--muted);font-size:13px;margin-top:14px;">Không nhận được mã? Kiểm tra mục Spam / Quảng cáo, hoặc <a id="resendLink" onclick="resendOtp()" style="color:var(--cyan);cursor:pointer;">gửi lại mã</a> &middot; <a onclick="openAuth('register')" style="color:var(--cyan);cursor:pointer;">đổi thông tin</a></p>`;
 }
 function showAuthErr(msg){ const e=document.getElementById('authErr'); e.textContent=msg; e.style.display='block'; }
 async function doLogin(){
@@ -254,10 +254,35 @@ async function doRequestOtp(){
     phone: document.getElementById('regPhone').value.trim(),
     password: document.getElementById('regPass').value,
   };
-  const res = await fetch('/api/register/request-otp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  const data = await res.json();
-  if(!res.ok) return showAuthErr(data.error||'Lỗi gửi mã OTP');
-  document.getElementById('modalContent').innerHTML = otpFormHTML(body.email);
+  LAST_REG = body;
+  const btn = document.querySelector('#modalContent .checkout-btn');
+  const oldText = btn ? btn.textContent : '';
+  if(btn){ btn.disabled = true; btn.textContent = 'Đang gửi mã… (lần đầu có thể mất tới 1 phút)'; }
+  try{
+    const res = await fetch('/api/register/request-otp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const data = await res.json().catch(()=>({}));
+    if(!res.ok){
+      if(btn){ btn.disabled = false; btn.textContent = oldText; }
+      return showAuthErr(data.error||'Lỗi gửi mã OTP');
+    }
+    document.getElementById('modalContent').innerHTML = otpFormHTML(body.email);
+  }catch(e){
+    if(btn){ btn.disabled = false; btn.textContent = oldText; }
+    showAuthErr('Không kết nối được tới máy chủ, vui lòng thử lại.');
+  }
+}
+let LAST_REG = null;
+async function resendOtp(){
+  if(!LAST_REG) return openAuth('register');
+  const link = document.getElementById('resendLink');
+  if(link){ link.textContent = 'đang gửi lại…'; link.style.pointerEvents = 'none'; }
+  try{
+    const res = await fetch('/api/register/request-otp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(LAST_REG)});
+    const data = await res.json().catch(()=>({}));
+    if(!res.ok){ showAuthErr(data.error||'Chưa gửi lại được mã'); }
+    else { showAuthErr('Đã gửi lại mã, vui lòng kiểm tra email (cả mục Spam).'); document.getElementById('authErr').style.color='var(--lime)'; }
+  }catch(e){ showAuthErr('Không kết nối được tới máy chủ, vui lòng thử lại.'); }
+  if(link){ link.textContent = 'gửi lại mã'; link.style.pointerEvents = ''; }
 }
 async function doVerifyOtp(email){
   const code = document.getElementById('otpCode').value.trim();
